@@ -7,6 +7,15 @@ on:
         description: "Process lookback window in days (default: 180)"
         required: false
         default: "180"
+  push:
+    branches:
+      - main
+    paths:
+      - "src/**"
+      - "scripts/**"
+      - ".github/workflows/pipeline_us.yml"
+      - ".github/workflows/pipeline_kr.yml"
+      - "requirements.cloud.txt"
   schedule:
     # Fixed UTC schedule; arrives after US close year-round.
     # 22:30 UTC = 17:30 EST / 18:30 EDT (Mon-Fri)
