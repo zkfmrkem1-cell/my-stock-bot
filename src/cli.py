@@ -7,6 +7,7 @@ from typing import Sequence
 
 from .database import initialize_database
 from .seed_universes import ALL_SEED_TICKERS, KR_KOSPI200_TICKERS, US_SEED_TICKERS
+from .ticker_aliases import YFINANCE_TICKER_ALIASES, canonicalize_ticker_list_for_storage
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -583,19 +584,40 @@ def _handle_seed_symbols(args: argparse.Namespace) -> int:
         tickers = list(ALL_SEED_TICKERS)
     else:
         tickers = list(US_SEED_TICKERS)
+    original_ticker_count = len(tickers)
+    tickers = canonicalize_ticker_list_for_storage(tickers)
     engine = create_db_engine(echo=bool(args.echo))
 
     with engine.begin() as conn:
         symbols_table = sa.Table("symbols", sa.MetaData(), schema="meta", autoload_with=conn)
         rows = [{"ticker": t} for t in tickers]
-        stmt = pg_insert(symbols_table).values(rows).on_conflict_do_nothing(
-            index_elements=[symbols_table.c.ticker]
+        stmt = (
+            pg_insert(symbols_table)
+            .values(rows)
+            .on_conflict_do_nothing(index_elements=[symbols_table.c.ticker])
+            .returning(symbols_table.c.ticker)
         )
-        result = conn.execute(stmt)
-        inserted = int(result.rowcount or 0)
+        inserted_rows = conn.execute(stmt).scalars().all()
+        inserted = len(inserted_rows)
+
+        deactivated_legacy_aliases = 0
+        if args.market in {"us", "all"}:
+            alias_keys = list(YFINANCE_TICKER_ALIASES.keys())
+            if alias_keys:
+                result = conn.execute(
+                    sa.update(symbols_table)
+                    .where(
+                        symbols_table.c.ticker.in_(alias_keys),
+                        symbols_table.c.is_active.is_(True),
+                    )
+                    .values(is_active=False)
+                )
+                deactivated_legacy_aliases = max(int(result.rowcount or 0), 0)
 
     print(f"seed_symbols.market={args.market}")
     print(f"seed_symbols.total_tickers={len(tickers)}")
+    if original_ticker_count != len(tickers):
+        print(f"seed_symbols.alias_normalized={original_ticker_count - len(tickers)}")
     if len(tickers) <= 80:
         print(f"seed_symbols.tickers={','.join(tickers)}")
     else:
@@ -603,6 +625,8 @@ def _handle_seed_symbols(args: argparse.Namespace) -> int:
         print(f"seed_symbols.tickers_preview={preview},... ({len(tickers)} total)")
     print(f"seed_symbols.inserted={inserted}")
     print(f"seed_symbols.skipped={len(tickers) - inserted}")
+    if args.market in {"us", "all"}:
+        print(f"seed_symbols.deactivated_legacy_aliases={deactivated_legacy_aliases}")
     return 0
 
 

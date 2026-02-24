@@ -13,6 +13,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from ..database import create_db_engine
 from ..models.meta import Symbol
+from ..ticker_aliases import canonicalize_ticker_for_yfinance
 
 
 DEFAULT_HISTORY_START_DATE = date(2000, 1, 1)
@@ -235,8 +236,9 @@ def _fetch_yfinance_history(
 ) -> pd.DataFrame:
     import yfinance as yf
 
+    yf_ticker = canonicalize_ticker_for_yfinance(ticker)
     yf_end_exclusive = end_date + timedelta(days=1)
-    history = yf.Ticker(ticker).history(
+    history = yf.Ticker(yf_ticker).history(
         start=start_date.isoformat(),
         end=yf_end_exclusive.isoformat(),
         interval="1d",
