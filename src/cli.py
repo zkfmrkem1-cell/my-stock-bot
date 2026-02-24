@@ -145,6 +145,28 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     news_check_parser.set_defaults(handler=_handle_news_check)
 
+    news_dedupe_parser = subparsers.add_parser(
+        "news-dedupe",
+        help="Delete duplicated rows from news.stock_news (URL-first, fallback source+title).",
+    )
+    news_dedupe_parser.add_argument(
+        "--market",
+        choices=["all", "us", "kr"],
+        default="all",
+        help="Optional market scope filter (us/kr/all) for dedupe/count.",
+    )
+    news_dedupe_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Count duplicates only; do not delete rows.",
+    )
+    news_dedupe_parser.add_argument(
+        "--echo",
+        action="store_true",
+        help="Enable SQLAlchemy SQL echo logging.",
+    )
+    news_dedupe_parser.set_defaults(handler=_handle_news_dedupe)
+
     symbol_reports_parser = subparsers.add_parser(
         "symbol-reports",
         help="Build per-symbol structured snapshot reports and save to report.symbol_reports.",
@@ -348,6 +370,25 @@ def _handle_news_check(args: argparse.Namespace) -> int:
     print(f"news_check.total_news_saved={total_news}")
     for r in results:
         print(f"  {r.ticker}: {r.news_count}개")
+    return 0
+
+
+def _handle_news_dedupe(args: argparse.Namespace) -> int:
+    from .ai_engine.news_checker import dedupe_stock_news_table
+
+    summary = dedupe_stock_news_table(
+        market=getattr(args, "market", "all"),
+        dry_run=bool(getattr(args, "dry_run", False)),
+        echo=bool(getattr(args, "echo", False)),
+    )
+
+    print(f"news_dedupe.market={summary.market}")
+    print(f"news_dedupe.dry_run={str(summary.dry_run).lower()}")
+    print(f"news_dedupe.duplicate_rows_found={summary.duplicate_rows_found}")
+    print(f"news_dedupe.duplicate_url_rows={summary.duplicate_url_rows}")
+    print(f"news_dedupe.duplicate_title_rows={summary.duplicate_title_rows}")
+    print(f"news_dedupe.deleted_rows={summary.deleted_rows}")
+    print(f"news_dedupe.remaining_rows={summary.remaining_rows}")
     return 0
 
 

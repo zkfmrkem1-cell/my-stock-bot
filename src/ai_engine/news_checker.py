@@ -39,6 +39,17 @@ class NewsCollectResult:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class NewsDedupeSummary:
+    market: str
+    dry_run: bool
+    duplicate_rows_found: int = 0
+    deleted_rows: int = 0
+    duplicate_url_rows: int = 0
+    duplicate_title_rows: int = 0
+    remaining_rows: int = 0
+
+
 # ---------------------------------------------------------------------------
 # 뉴스 수집
 # ---------------------------------------------------------------------------
@@ -202,6 +213,145 @@ def _save_news_to_db(
     if rows:
         conn.execute(sa.insert(news_table), rows)
     return len(rows)
+
+
+def _market_filter_sql_for_news_dedupe(market: str) -> tuple[str, str]:
+    scope = str(market or "all").lower()
+    if scope == "kr":
+        return "JOIN meta.symbols s ON s.id = n.symbol_id", "AND s.ticker LIKE '%.KS'"
+    if scope == "us":
+        return "JOIN meta.symbols s ON s.id = n.symbol_id", "AND s.ticker NOT LIKE '%.KS'"
+    return "", ""
+
+
+def _count_duplicate_news_rows(
+    conn: sa.Connection,
+    *,
+    use_url_key: bool,
+    market: str,
+) -> int:
+    join_sql, market_clause = _market_filter_sql_for_news_dedupe(market)
+    if use_url_key:
+        key_partition = "lower(btrim(n.url))"
+        key_where = "nullif(btrim(coalesce(n.url, '')), '') IS NOT NULL"
+    else:
+        key_partition = "lower(btrim(n.title))"
+        key_where = (
+            "nullif(btrim(coalesce(n.url, '')), '') IS NULL "
+            "AND nullif(btrim(coalesce(n.title, '')), '') IS NOT NULL"
+        )
+    sql = f"""
+WITH ranked AS (
+    SELECT
+        n.id,
+        ROW_NUMBER() OVER (
+            PARTITION BY n.symbol_id, lower(coalesce(n.source, '')), {key_partition}
+            ORDER BY
+                COALESCE(n.published_at, n.created_at) DESC NULLS LAST,
+                n.created_at DESC NULLS LAST,
+                n.id DESC
+        ) AS rn
+    FROM news.stock_news n
+    {join_sql}
+    WHERE {key_where}
+    {market_clause}
+)
+SELECT COUNT(*)::bigint AS cnt
+FROM ranked
+WHERE rn > 1
+"""
+    value = conn.execute(sa.text(sql)).scalar_one()
+    return int(value or 0)
+
+
+def _delete_duplicate_news_rows(
+    conn: sa.Connection,
+    *,
+    use_url_key: bool,
+    market: str,
+) -> int:
+    join_sql, market_clause = _market_filter_sql_for_news_dedupe(market)
+    if use_url_key:
+        key_partition = "lower(btrim(n.url))"
+        key_where = "nullif(btrim(coalesce(n.url, '')), '') IS NOT NULL"
+    else:
+        key_partition = "lower(btrim(n.title))"
+        key_where = (
+            "nullif(btrim(coalesce(n.url, '')), '') IS NULL "
+            "AND nullif(btrim(coalesce(n.title, '')), '') IS NOT NULL"
+        )
+    sql = f"""
+WITH ranked AS (
+    SELECT
+        n.id,
+        ROW_NUMBER() OVER (
+            PARTITION BY n.symbol_id, lower(coalesce(n.source, '')), {key_partition}
+            ORDER BY
+                COALESCE(n.published_at, n.created_at) DESC NULLS LAST,
+                n.created_at DESC NULLS LAST,
+                n.id DESC
+        ) AS rn
+    FROM news.stock_news n
+    {join_sql}
+    WHERE {key_where}
+    {market_clause}
+)
+DELETE FROM news.stock_news t
+USING ranked r
+WHERE t.id = r.id
+  AND r.rn > 1
+RETURNING t.id
+"""
+    deleted_ids = conn.execute(sa.text(sql)).scalars().all()
+    return len(deleted_ids)
+
+
+def _count_news_rows(conn: sa.Connection, *, market: str) -> int:
+    join_sql, market_clause = _market_filter_sql_for_news_dedupe(market)
+    sql = f"""
+SELECT COUNT(*)::bigint AS cnt
+FROM news.stock_news n
+{join_sql}
+WHERE 1=1
+{market_clause}
+"""
+    value = conn.execute(sa.text(sql)).scalar_one()
+    return int(value or 0)
+
+
+def dedupe_stock_news_table(
+    *,
+    market: str = "all",
+    dry_run: bool = False,
+    echo: bool = False,
+    engine: Engine | None = None,
+) -> NewsDedupeSummary:
+    _load_dotenv_if_available()
+    db_engine = engine or create_db_engine(echo=echo)
+    market_scope = str(market or "all").lower()
+
+    with db_engine.begin() as conn:
+        insp = sa.inspect(conn)
+        if not insp.has_table("stock_news", schema="news"):
+            raise RuntimeError("news.stock_news table is missing. Run `python -m src.cli init-db` first.")
+
+        dup_url = _count_duplicate_news_rows(conn, use_url_key=True, market=market_scope)
+        dup_title = _count_duplicate_news_rows(conn, use_url_key=False, market=market_scope)
+        deleted_total = 0
+        if not dry_run:
+            deleted_total += _delete_duplicate_news_rows(conn, use_url_key=True, market=market_scope)
+            deleted_total += _delete_duplicate_news_rows(conn, use_url_key=False, market=market_scope)
+        remaining = _count_news_rows(conn, market=market_scope)
+
+    return NewsDedupeSummary(
+        market=market_scope,
+        dry_run=bool(dry_run),
+        duplicate_rows_found=int(dup_url + dup_title),
+        deleted_rows=int(deleted_total),
+        duplicate_url_rows=int(dup_url),
+        duplicate_title_rows=int(dup_title),
+        remaining_rows=int(remaining),
+    )
 
 
 # ---------------------------------------------------------------------------
