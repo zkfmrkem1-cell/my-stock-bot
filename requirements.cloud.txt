@@ -7,5 +7,5 @@ python-dotenv>=1.0,<2
 yfinance>=0.2.50,<1
 tenacity>=8.2,<10
 streamlit>=1.40,<2
-FinanceDataReader>=0.9.90
+finance-datareader>=0.9.90
 pandas_market_calendars>=4,<5
