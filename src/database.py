@@ -37,9 +37,22 @@ def get_postgres_dsn() -> str:
     return dsn
 
 
+def _normalize_postgres_dsn_for_sqlalchemy(dsn: str) -> str:
+    value = str(dsn or "").strip()
+    if value.startswith("postgresql+psycopg://"):
+        return value
+    if value.startswith("postgresql+psycopg2://"):
+        return "postgresql+psycopg://" + value[len("postgresql+psycopg2://") :]
+    if value.startswith("postgresql://"):
+        return "postgresql+psycopg://" + value[len("postgresql://") :]
+    if value.startswith("postgres://"):
+        return "postgresql+psycopg://" + value[len("postgres://") :]
+    return value
+
+
 def create_db_engine(*, dsn: str | None = None, echo: bool = False) -> Engine:
     return sa.create_engine(
-        dsn or get_postgres_dsn(),
+        _normalize_postgres_dsn_for_sqlalchemy(dsn or get_postgres_dsn()),
         echo=echo,
         pool_pre_ping=True,
     )
