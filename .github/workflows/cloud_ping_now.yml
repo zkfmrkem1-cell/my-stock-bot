@@ -1,0 +1,54 @@
+name: Cloud Ping Now (KR)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/cloud_ping_now.yml
+
+permissions:
+  contents: read
+
+jobs:
+  send-discord-ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: kr
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      PING_TEXT: "[CLOUD PING][KR] GitHub Actions -> Discord | ref=${{ github.ref_name }} | sha=${{ github.sha }}"
+    steps:
+      - name: Validate webhook secret
+        shell: bash
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "Missing required secret/env: DISCORD_WEBHOOK_URL" >&2
+            exit 1
+          fi
+
+      - name: Send Discord ping
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+          text = os.environ.get("PING_TEXT", "").strip() or "[CLOUD PING][KR]"
+          body = json.dumps({"content": text}, ensure_ascii=False).encode("utf-8")
+          req = urllib.request.Request(
+              url,
+              data=body,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(req, timeout=20) as resp:
+              status = getattr(resp, "status", None) or resp.getcode()
+              print(f"discord.status={status}")
+              if int(status) >= 400:
+                  sys.exit(1)
+          PY
