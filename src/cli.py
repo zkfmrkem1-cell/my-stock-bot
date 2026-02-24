@@ -349,7 +349,7 @@ def _handle_news_check(args: argparse.Namespace) -> int:
     with engine.connect() as conn:
         meta_table = sa.Table("symbols", sa.MetaData(), schema="meta", autoload_with=conn)
         stmt = sa.select(meta_table.c.id, meta_table.c.ticker, meta_table.c.name).where(
-            meta_table.c.is_active == True
+            meta_table.c.is_active.is_(True)
         )
         if market_scope == "kr":
             stmt = stmt.where(meta_table.c.ticker.like("%.KS"))

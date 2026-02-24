@@ -142,7 +142,7 @@ def _load_feature_rows(
             feat_t.c.feature_version,
         )
         .join(feat_t, feat_t.c.symbol_id == meta_t.c.id)
-        .where(meta_t.c.is_active == True, feat_t.c.trade_date == report_date)
+        .where(meta_t.c.is_active.is_(True), feat_t.c.trade_date == report_date)
         .order_by(meta_t.c.ticker.asc())
     )
     market_scope = str(market or "all").lower()

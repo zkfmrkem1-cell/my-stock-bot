@@ -459,7 +459,8 @@ def process_feature_and_label_data(
     with db_engine.begin() as conn:
         raw_table = _require_table(conn, schema="raw", table_name="ohlcv_daily")
         _require_table(conn, schema="feat", table_name="daily_features")
-        _require_table(conn, schema="label", table_name="daily_labels")
+        if not skip_labels:
+            _require_table(conn, schema="label", table_name="daily_labels")
 
         raw_mode = _detect_raw_mode(raw_table)
         effective_requested_tickers = filtered_requested_tickers

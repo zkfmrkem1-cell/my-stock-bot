@@ -176,8 +176,8 @@ def _save_news_to_db(
 
     existing_keys: set[tuple[str, str, str]] = set()
     conditions: list[sa.ColumnElement[bool]] = []
-    url_keys = sorted({k[2] for k in candidate_keys if k[0] == "url"})
-    title_keys = sorted({(k[1], k[2]) for k in candidate_keys if k[0] == "title"})
+    url_keys = sorted({k[2] for k in candidate_keys if k[0] == "url" and k[2]})
+    title_keys = sorted({(k[1], k[2]) for k in candidate_keys if k[0] == "title" and k[2]})
     if url_keys:
         conditions.append(sa.func.lower(sa.func.coalesce(news_table.c.url, "")).in_(url_keys))
     if title_keys:

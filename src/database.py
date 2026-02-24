@@ -21,7 +21,7 @@ def _load_dotenv_if_available() -> None:
     except ImportError:
         return
     load_dotenv()
-    project_root = Path.cwd()
+    project_root = Path(__file__).resolve().parent.parent
     fallback_env = project_root / ".ai" / ".env"
     if fallback_env.exists():
         load_dotenv(fallback_env, override=False)
