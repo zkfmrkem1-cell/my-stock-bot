@@ -5,7 +5,7 @@ from datetime import datetime
 import sqlalchemy as sa
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-SCHEMA_NAMES: tuple[str, ...] = ("meta", "raw", "feat", "label", "exp", "report")
+SCHEMA_NAMES: tuple[str, ...] = ("meta", "raw", "feat", "label", "exp", "report", "news")
 
 NAMING_CONVENTION = {
     "ix": "ix_%(table_name)s_%(column_0_name)s",

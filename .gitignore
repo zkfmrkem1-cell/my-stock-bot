@@ -1,0 +1,27 @@
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime outputs
+output/
+
+# Local secrets (keep examples tracked)
+.ai/.env
+.ai/.env.shared
+.ai/.env.us
+.ai/.env.kr
+.ai/.env.*
+!.ai/.env.shared.example
+!.ai/.env.us.example
+!.ai/.env.kr.example
+
+# Local assistant/tooling state
+.claude/

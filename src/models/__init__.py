@@ -3,8 +3,9 @@ from .exp import DatasetExport
 from .feat import DailyFeature
 from .label import DailyLabel
 from .meta import JobRun, Symbol
+from .news import StockNews, TradeSignal
 from .raw import DailyOHLCV
-from .report import DailyReport
+from .report import DailyReport, SymbolReport
 
 __all__ = [
     "Base",
@@ -16,4 +17,7 @@ __all__ = [
     "DailyLabel",
     "DatasetExport",
     "DailyReport",
+    "SymbolReport",
+    "StockNews",
+    "TradeSignal",
 ]

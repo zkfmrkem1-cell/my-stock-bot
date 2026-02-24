@@ -1,0 +1,89 @@
+name: KR Market Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      process_lookback_days:
+        description: "Process lookback window in days (default: 180)"
+        required: false
+        default: "180"
+  schedule:
+    # 15:40 KST on weekdays (GitHub cron uses UTC)
+    - cron: "40 6 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: market-pipeline-kr
+  cancel-in-progress: false
+
+jobs:
+  run-kr-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: kr
+    env:
+      POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Seoul
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.cloud.txt
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.cloud.txt
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          for key in POSTGRES_DSN GEMINI_API_KEY DISCORD_WEBHOOK_URL; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing required secret/env: ${key}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Seed symbols (KR)
+        shell: bash
+        run: python -m src.cli seed-symbols --market kr
+
+      - name: Ingest incremental OHLCV (10y fallback for new symbols)
+        shell: bash
+        run: python -m src.cli ingest --market kr --default-start-date 2016-01-01
+
+      - name: Process features (rolling lookback, skip labels)
+        shell: bash
+        env:
+          INPUT_LOOKBACK_DAYS: ${{ github.event.inputs.process_lookback_days }}
+        run: |
+          LOOKBACK_DAYS="${INPUT_LOOKBACK_DAYS:-180}"
+          PROCESS_START_DATE="$(date -u -d "${LOOKBACK_DAYS} days ago" +%F)"
+          echo "process_start_date=${PROCESS_START_DATE} (lookback=${LOOKBACK_DAYS}d)"
+          python -m src.cli process --market kr --start-date "${PROCESS_START_DATE}" --skip-labels
+
+      - name: Collect news
+        shell: bash
+        run: python -m src.cli news-check --market kr
+
+      - name: Build symbol reports
+        shell: bash
+        run: python -m src.cli symbol-reports --market kr
+
+      - name: Send status report (Discord)
+        shell: bash
+        run: python -m src.cli status-report --market kr

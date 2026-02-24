@@ -84,6 +84,20 @@ def _normalize_tickers(tickers: Sequence[str] | None) -> list[str]:
     return out
 
 
+def _ticker_matches_market(ticker: str, market: str) -> bool:
+    scope = str(market or "all").lower()
+    t = str(ticker or "").upper()
+    if scope == "kr":
+        return t.endswith(".KS")
+    if scope == "us":
+        return not t.endswith(".KS")
+    return True
+
+
+def _filter_tickers_by_market(tickers: Sequence[str], market: str) -> list[str]:
+    return [t for t in _normalize_tickers(tickers) if _ticker_matches_market(t, market)]
+
+
 def _reflect_table(conn: sa.Connection, *, schema: str, table_name: str) -> sa.Table:
     return sa.Table(table_name, sa.MetaData(), schema=schema, autoload_with=conn)
 
@@ -234,13 +248,23 @@ def _fetch_yfinance_history(
     return history
 
 
-def _load_target_symbols(conn: sa.Connection, tickers: Sequence[str] | None) -> list[dict[str, Any]]:
+def _load_target_symbols(
+    conn: sa.Connection,
+    tickers: Sequence[str] | None,
+    *,
+    market: str = "all",
+) -> list[dict[str, Any]]:
     symbol_table = Symbol.__table__
     stmt = (
         sa.select(symbol_table.c.id, symbol_table.c.ticker)
         .where(symbol_table.c.is_active.is_(True))
         .order_by(symbol_table.c.ticker.asc())
     )
+    market_scope = str(market or "all").lower()
+    if market_scope == "kr":
+        stmt = stmt.where(symbol_table.c.ticker.like("%.KS"))
+    elif market_scope == "us":
+        stmt = stmt.where(sa.not_(symbol_table.c.ticker.like("%.KS")))
     normalized = _normalize_tickers(tickers)
     if normalized:
         stmt = stmt.where(symbol_table.c.ticker.in_(normalized))
@@ -295,13 +319,15 @@ def _compute_fetch_range(
     full_refresh: bool,
     requested_start_date: date | None,
     requested_end_date: date | None,
+    default_start_date: date | None = None,
 ) -> tuple[date, date] | None:
     effective_end = requested_end_date or date.today()
+    fallback_start = default_start_date or DEFAULT_HISTORY_START_DATE
     if full_refresh:
-        effective_start = requested_start_date or DEFAULT_HISTORY_START_DATE
+        effective_start = requested_start_date or fallback_start
     else:
         incremental_start = (
-            last_trade_date + timedelta(days=1) if last_trade_date is not None else DEFAULT_HISTORY_START_DATE
+            last_trade_date + timedelta(days=1) if last_trade_date is not None else fallback_start
         )
         effective_start = incremental_start if requested_start_date is None else max(requested_start_date, incremental_start)
     if effective_start > effective_end:
@@ -516,38 +542,50 @@ def _update_summary_dates(summary: IngestSummary, records: Sequence[dict[str, An
 def ingest_raw_daily_ohlcv(
     *,
     tickers: Sequence[str] | None = None,
+    market: str = "all",
     full_refresh: bool = False,
     start_date: date | None = None,
     end_date: date | None = None,
+    default_start_date: date | None = None,
     echo: bool = False,
     engine: Engine | None = None,
 ) -> IngestSummary:
     db_engine = engine or create_db_engine(echo=echo)
     schema_info = _validate_ingest_schema(db_engine)
+    market_scope = str(market or "all").lower()
     normalized_tickers = _normalize_tickers(tickers)
+    filtered_requested_tickers = (
+        _filter_tickers_by_market(normalized_tickers, market_scope)
+        if market_scope != "all"
+        else normalized_tickers
+    )
 
     job_run_id = _create_job_run(
         db_engine,
         full_refresh=full_refresh,
-        requested_tickers=normalized_tickers,
+        requested_tickers=filtered_requested_tickers,
         start_date=start_date,
         end_date=end_date,
     )
     summary = IngestSummary(
         job_run_id=job_run_id,
         full_refresh=bool(full_refresh),
-        requested_tickers=normalized_tickers,
+        requested_tickers=filtered_requested_tickers,
     )
+    if market_scope != "all" and normalized_tickers and len(filtered_requested_tickers) != len(normalized_tickers):
+        dropped = sorted(set(normalized_tickers) - set(filtered_requested_tickers))
+        for ticker in dropped:
+            summary.failed_tickers.append({"ticker": ticker, "error": f"Outside market='{market_scope}' scope."})
 
     try:
         with db_engine.connect() as conn:
             raw_table = _reflect_table(conn, schema="raw", table_name="ohlcv_daily")
 
             if schema_info.raw_mode == "modern_symbol_id":
-                symbols = _load_target_symbols(conn, normalized_tickers)
-                if normalized_tickers and len(symbols) != len(normalized_tickers):
+                symbols = _load_target_symbols(conn, filtered_requested_tickers, market=market_scope)
+                if filtered_requested_tickers and len(symbols) != len(filtered_requested_tickers):
                     found = {str(row["ticker"]).upper() for row in symbols}
-                    for ticker in normalized_tickers:
+                    for ticker in filtered_requested_tickers:
                         if ticker not in found:
                             summary.failed_tickers.append(
                                 {"ticker": ticker, "error": "Ticker not found in meta.symbols or inactive."}
@@ -567,10 +605,10 @@ def ingest_raw_daily_ohlcv(
                     for row in symbols
                 ]
             else:
-                if normalized_tickers:
-                    target_tickers = normalized_tickers
+                if filtered_requested_tickers:
+                    target_tickers = filtered_requested_tickers
                 else:
-                    symbols = _load_target_symbols(conn, None)
+                    symbols = _load_target_symbols(conn, None, market=market_scope)
                     target_tickers = [str(row["ticker"]).upper() for row in symbols]
                 last_trade_dates_by_ticker = _load_last_trade_dates_by_ticker(
                     conn,
@@ -596,6 +634,7 @@ def ingest_raw_daily_ohlcv(
                 full_refresh=full_refresh,
                 requested_start_date=start_date,
                 requested_end_date=end_date,
+                default_start_date=default_start_date,
             )
             if date_range is None:
                 summary.empty_tickers.append(ticker)
@@ -680,4 +719,3 @@ def ingest_raw_daily_ohlcv(
             error_message=str(exc),
         )
         raise
-

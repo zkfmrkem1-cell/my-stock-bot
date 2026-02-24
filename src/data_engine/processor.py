@@ -57,6 +57,20 @@ def _normalize_tickers(tickers: Sequence[str] | None) -> list[str]:
     return out
 
 
+def _ticker_matches_market(ticker: str, market: str) -> bool:
+    scope = str(market or "all").lower()
+    t = str(ticker or "").upper()
+    if scope == "kr":
+        return t.endswith(".KS")
+    if scope == "us":
+        return not t.endswith(".KS")
+    return True
+
+
+def _filter_tickers_by_market(tickers: Sequence[str], market: str) -> list[str]:
+    return [t for t in _normalize_tickers(tickers) if _ticker_matches_market(t, market)]
+
+
 def _reflect_table(conn: sa.Connection, *, schema: str, table_name: str) -> sa.Table:
     return sa.Table(table_name, sa.MetaData(), schema=schema, autoload_with=conn)
 
@@ -66,6 +80,21 @@ def _require_table(conn: sa.Connection, *, schema: str, table_name: str) -> sa.T
     if not inspector.has_table(table_name, schema=schema):
         raise RuntimeError(f"Missing required table {schema}.{table_name}. Run `python -m src.cli init-db` first.")
     return _reflect_table(conn, schema=schema, table_name=table_name)
+
+
+def _load_meta_tickers_for_market(conn: sa.Connection, market: str) -> list[str]:
+    scope = str(market or "all").lower()
+    meta_symbols = _require_table(conn, schema="meta", table_name="symbols")
+    stmt = (
+        sa.select(meta_symbols.c.ticker)
+        .where(meta_symbols.c.is_active.is_(True))
+        .order_by(meta_symbols.c.ticker.asc())
+    )
+    if scope == "kr":
+        stmt = stmt.where(meta_symbols.c.ticker.like("%.KS"))
+    elif scope == "us":
+        stmt = stmt.where(sa.not_(meta_symbols.c.ticker.like("%.KS")))
+    return [str(r.ticker).upper() for r in conn.execute(stmt)]
 
 
 def _detect_raw_mode(raw_table: sa.Table) -> RawMode:
@@ -403,14 +432,29 @@ def _batch_upsert(
 def process_feature_and_label_data(
     *,
     tickers: Sequence[str] | None = None,
+    market: str = "all",
     start_date: date | None = None,
     end_date: date | None = None,
+    skip_labels: bool = False,
     echo: bool = False,
     engine: Engine | None = None,
 ) -> ProcessSummary:
     db_engine = engine or create_db_engine(echo=echo)
+    market_scope = str(market or "all").lower()
     normalized_tickers = _normalize_tickers(tickers)
+    filtered_requested_tickers = (
+        _filter_tickers_by_market(normalized_tickers, market_scope)
+        if market_scope != "all"
+        else normalized_tickers
+    )
     summary = ProcessSummary(requested_tickers=normalized_tickers)
+    if market_scope != "all" and normalized_tickers and len(filtered_requested_tickers) != len(normalized_tickers):
+        dropped = sorted(set(normalized_tickers) - set(filtered_requested_tickers))
+        if dropped:
+            preview = ",".join(dropped[:10])
+            suffix = "" if len(dropped) <= 10 else f",... ({len(dropped)} total)"
+            summary.warnings.append(f"Ignored {len(dropped)} ticker(s) outside market='{market_scope}': {preview}{suffix}")
+    summary.requested_tickers = filtered_requested_tickers
 
     with db_engine.begin() as conn:
         raw_table = _require_table(conn, schema="raw", table_name="ohlcv_daily")
@@ -418,6 +462,9 @@ def process_feature_and_label_data(
         _require_table(conn, schema="label", table_name="daily_labels")
 
         raw_mode = _detect_raw_mode(raw_table)
+        effective_requested_tickers = filtered_requested_tickers
+        if not effective_requested_tickers and market_scope != "all":
+            effective_requested_tickers = _load_meta_tickers_for_market(conn, market_scope)
         raw_tickers = []
         if raw_mode == "legacy_ticker":
             raw_tickers = _load_raw_tickers_from_table(
@@ -426,9 +473,11 @@ def process_feature_and_label_data(
                 start_date=start_date,
                 end_date=end_date,
             )
+            if market_scope != "all":
+                raw_tickers = _filter_tickers_by_market(raw_tickers, market_scope)
         ticker_to_symbol_id = _ensure_symbol_mapping(
             conn,
-            requested_tickers=normalized_tickers,
+            requested_tickers=effective_requested_tickers,
             raw_tickers=raw_tickers,
         )
 
@@ -437,7 +486,7 @@ def process_feature_and_label_data(
             raw_table=raw_table,
             raw_mode=raw_mode,
             ticker_to_symbol_id=ticker_to_symbol_id,
-            requested_tickers=normalized_tickers,
+            requested_tickers=effective_requested_tickers,
             start_date=start_date,
             end_date=end_date,
         )
@@ -455,21 +504,14 @@ def process_feature_and_label_data(
         summary.warnings.append("raw.adj_close is unavailable in current raw schema; fallback to close was used.")
 
     feature_df = _compute_feature_frame(raw_df)
-    label_df = _compute_label_frame(raw_df)
 
     with db_engine.begin() as conn:
         feat_table = _require_table(conn, schema="feat", table_name="daily_features")
-        label_table = _require_table(conn, schema="label", table_name="daily_labels")
 
         feature_rows = _nan_to_none_records(
             feature_df,
             table_columns=set(feat_table.c.keys()),
             meta_builder="feature",
-        )
-        label_rows = _nan_to_none_records(
-            label_df,
-            table_columns=set(label_table.c.keys()),
-            meta_builder="label",
         )
 
         summary.feature_rows_upserted = _batch_upsert(
@@ -478,11 +520,20 @@ def process_feature_and_label_data(
             rows=feature_rows,
             pk_columns=("symbol_id", "trade_date"),
         )
-        summary.label_rows_upserted = _batch_upsert(
-            conn,
-            table=label_table,
-            rows=label_rows,
-            pk_columns=("symbol_id", "trade_date"),
-        )
+
+        if not skip_labels:
+            label_df = _compute_label_frame(raw_df)
+            label_table = _require_table(conn, schema="label", table_name="daily_labels")
+            label_rows = _nan_to_none_records(
+                label_df,
+                table_columns=set(label_table.c.keys()),
+                meta_builder="label",
+            )
+            summary.label_rows_upserted = _batch_upsert(
+                conn,
+                table=label_table,
+                rows=label_rows,
+                pk_columns=("symbol_id", "trade_date"),
+            )
 
     return summary
