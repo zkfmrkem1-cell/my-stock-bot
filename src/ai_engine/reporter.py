@@ -13,27 +13,31 @@ import requests
 from ..database import _load_dotenv_if_available
 
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
 
 
-def generate_gemini_report(
+def _build_candidate_models(preferred_model: str | None) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in [preferred_model, DEFAULT_GEMINI_MODEL]:
+        model = str(raw or "").strip()
+        if not model or model in seen:
+            continue
+        seen.add(model)
+        ordered.append(model)
+    return ordered
+
+
+def _call_gemini_generate_content(
     *,
     prompt: str,
-    gemini_model: str | None = None,
-    api_key: str | None = None,
-    timeout: int = 60,
+    model: str,
+    api_key: str,
+    timeout: int,
 ) -> tuple[str, str]:
-    """
-    Gemini API 호출 → (응답 텍스트, 사용 모델명) 반환
-    """
-    _load_dotenv_if_available()
-    key = api_key or os.getenv(GEMINI_API_KEY_ENV, "").strip()
-    if not key:
-        raise RuntimeError(f"Missing required environment variable: {GEMINI_API_KEY_ENV}")
-
-    model = (gemini_model or os.getenv("GEMINI_MODEL", "")).strip() or "gemini-2.0-flash"
     endpoint = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={key}"
+        f"{model}:generateContent?key={api_key}"
     )
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -60,3 +64,38 @@ def generate_gemini_report(
 
     prompt_feedback = data.get("promptFeedback")
     raise RuntimeError(f"Gemini returned no text. promptFeedback={prompt_feedback}")
+
+
+def generate_gemini_report(
+    *,
+    prompt: str,
+    gemini_model: str | None = None,
+    api_key: str | None = None,
+    timeout: int = 60,
+) -> tuple[str, str]:
+    """
+    Gemini API 호출 → (응답 텍스트, 사용 모델명) 반환
+    """
+    _load_dotenv_if_available()
+    key = api_key or os.getenv(GEMINI_API_KEY_ENV, "").strip()
+    if not key:
+        raise RuntimeError(f"Missing required environment variable: {GEMINI_API_KEY_ENV}")
+
+    preferred_model = (gemini_model or os.getenv("GEMINI_MODEL", "")).strip() or DEFAULT_GEMINI_MODEL
+    candidate_models = _build_candidate_models(preferred_model)
+    errors: list[str] = []
+    for idx, model in enumerate(candidate_models, start=1):
+        try:
+            return _call_gemini_generate_content(
+                prompt=prompt,
+                model=model,
+                api_key=key,
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{model}: {exc}")
+            if idx == 1 and len(candidate_models) > 1:
+                print(f"[WARN] Gemini model fallback: '{preferred_model}' failed, retrying '{DEFAULT_GEMINI_MODEL}'")
+            continue
+
+    raise RuntimeError(" / ".join(errors))
