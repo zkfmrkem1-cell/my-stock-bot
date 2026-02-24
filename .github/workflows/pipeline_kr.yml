@@ -89,6 +89,10 @@ jobs:
         shell: bash
         run: python -m src.cli news-check --market kr
 
+      - name: Dedupe news table (KR)
+        shell: bash
+        run: python -m src.cli news-dedupe --market kr
+
       - name: Build symbol reports
         shell: bash
         run: python -m src.cli symbol-reports --market kr

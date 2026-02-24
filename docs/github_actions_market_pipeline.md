@@ -18,8 +18,9 @@ Both run:
 2. `ingest --market <kr|us> --default-start-date 2016-01-01`
 3. `process --market <kr|us> --start-date <today-180d> --skip-labels`
 4. `news-check --market <kr|us>`
-5. `symbol-reports --market <kr|us>`
-6. `status-report --market <kr|us>` (Discord send)
+5. `news-dedupe --market <kr|us>` (automatic duplicate cleanup)
+6. `symbol-reports --market <kr|us>`
+7. `status-report --market <kr|us>` (Discord send)
 
 ## Schedules
 

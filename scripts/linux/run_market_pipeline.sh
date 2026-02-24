@@ -110,6 +110,8 @@ invoke_step process "${PROCESS_CMD[@]}"
 if [[ $SKIP_NEWS -ne 1 ]]; then
   declare -a NEWS_CMD=(python -m src.cli news-check --market "$MARKET_KEY" "${TICKER_ARGS[@]}")
   invoke_step news "${NEWS_CMD[@]}"
+  declare -a NEWS_DEDUPE_CMD=(python -m src.cli news-dedupe --market "$MARKET_KEY")
+  invoke_step news_dedupe "${NEWS_DEDUPE_CMD[@]}"
 fi
 
 if [[ $SKIP_SYMBOL_REPORTS -ne 1 ]]; then

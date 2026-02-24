@@ -78,6 +78,9 @@ try {
         $newsArgs = @("-m", "src.cli", "news-check", "--market", $marketKey)
         if ($Tickers) { $newsArgs += @("--tickers") + $Tickers }
         Invoke-Step -StepName "news" -Command (@("python") + $newsArgs)
+
+        $newsDedupeArgs = @("-m", "src.cli", "news-dedupe", "--market", $marketKey)
+        Invoke-Step -StepName "news_dedupe" -Command (@("python") + $newsDedupeArgs)
     }
 
     if (-not $SkipStatusReport) {

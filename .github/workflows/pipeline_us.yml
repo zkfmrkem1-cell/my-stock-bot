@@ -90,6 +90,10 @@ jobs:
         shell: bash
         run: python -m src.cli news-check --market us
 
+      - name: Dedupe news table (US)
+        shell: bash
+        run: python -m src.cli news-dedupe --market us
+
       - name: Build symbol reports
         shell: bash
         run: python -m src.cli symbol-reports --market us
